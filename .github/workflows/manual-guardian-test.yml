@@ -25,25 +25,40 @@ jobs:
             exit 1
           fi
 
-      - name: Check Codespace state
-        id: state
+      - name: Check initial Codespace state
+        id: initial
         shell: bash
         run: |
           set -euo pipefail
           STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
-          echo "Codespace state: $STATE"
+          echo "Initial Codespace state: $STATE"
           echo "state=$STATE" >> "$GITHUB_OUTPUT"
 
-      - name: Stop if Codespace is not available
-        if: steps.state.outputs.state != 'Available'
+      - name: Start Codespace if needed
+        if: steps.initial.outputs.state != 'Available'
         shell: bash
         run: |
-          echo "Codespace is not Available."
-          echo "First test stops here: no automatic start and no repair."
-          exit 2
+          set -euo pipefail
+          echo "Codespace is not Available. Sending start request."
+          gh api --method POST "/user/codespaces/$CODESPACE/start" >/dev/null
+          echo "Start request sent."
+
+      - name: Wait until Codespace is Available
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in {1..36}; do
+            STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
+            echo "Codespace state: $STATE"
+            if [ "$STATE" = "Available" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Codespace did not become Available within 6 minutes."
+          exit 3
 
       - name: Read project status
-        if: steps.state.outputs.state == 'Available'
         shell: bash
         run: |
           set -euo pipefail
@@ -53,5 +68,5 @@ jobs:
         if: success()
         shell: bash
         run: |
-          echo "MANUAL GUARDIAN TEST OK"
-          echo "Status only - no repair - no trading changes - no schedule."
+          echo "MANUAL GUARDIAN START+STATUS TEST OK"
+          echo "No repair - no trading changes - no schedule."
