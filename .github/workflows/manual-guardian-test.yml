@@ -7,9 +7,9 @@ permissions:
   contents: read
 
 jobs:
-  manual-test:
+  guardian:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     env:
       GH_TOKEN: ${{ secrets.ETORO_GUARDIAN_TOKEN }}
@@ -25,48 +25,102 @@ jobs:
             exit 1
           fi
 
-      - name: Check initial Codespace state
-        id: initial
+      - name: Check and start Codespace
         shell: bash
         run: |
           set -euo pipefail
+
           STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
-          echo "Initial Codespace state: $STATE"
-          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          echo "Initial state: $STATE"
 
-      - name: Start Codespace if needed
-        if: steps.initial.outputs.state != 'Available'
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Codespace is not Available. Sending start request."
-          gh api --method POST "/user/codespaces/$CODESPACE/start" >/dev/null
-          echo "Start request sent."
+          if [ "$STATE" != "Available" ]; then
+            gh api --method POST "/user/codespaces/$CODESPACE/start" >/dev/null
+          fi
 
-      - name: Wait until Codespace is Available
-        shell: bash
-        run: |
-          set -euo pipefail
           for i in {1..36}; do
             STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
             echo "Codespace state: $STATE"
+
             if [ "$STATE" = "Available" ]; then
               exit 0
             fi
+
             sleep 10
           done
-          echo "Codespace did not become Available within 6 minutes."
-          exit 3
 
-      - name: Read project status
+          echo "Codespace did not become Available."
+          exit 2
+
+      - name: Check safety and project state
+        id: check
         shell: bash
         run: |
           set -euo pipefail
-          gh codespace ssh -c "$CODESPACE" -- "cd '$PROJECT_DIR' && python3 control.py status"
 
-      - name: Test completed
-        if: success()
+          FILE="$RUNNER_TEMP/status-before.json"
+
+          gh codespace ssh -c "$CODESPACE" -- \
+            "cd '$PROJECT_DIR' && python3 control.py status" > "$FILE"
+
+          jq -e . "$FILE" >/dev/null
+
+          jq -e '
+            .safety_ok == true and
+            .guardian.desired.environment == "DEMO" and
+            .guardian.desired.real_trading_enabled == false
+          ' "$FILE" >/dev/null
+
+          NEED_REPAIR=$(jq -r '
+            (
+              (.guardian.known_engine_processes["trading.py"].supervisor | length == 0) or
+              (.guardian.known_engine_processes["trading.py"].worker | length == 0) or
+              (.guardian.known_engine_processes["trading.py"].radar | length == 0) or
+              (.guardian.known_engine_processes["trading.py"].reporter | length == 0) or
+              (.guardian.processes.drive_sync | length == 0)
+            )
+          ' "$FILE")
+
+          echo "need_repair=$NEED_REPAIR" >> "$GITHUB_OUTPUT"
+          echo "Repair needed: $NEED_REPAIR"
+
+      - name: Repair project if needed
+        if: steps.check.outputs.need_repair == 'true'
         shell: bash
         run: |
-          echo "MANUAL GUARDIAN START+STATUS TEST OK"
-          echo "No repair - no trading changes - no schedule."
+          set -euo pipefail
+
+          gh codespace ssh -c "$CODESPACE" -- \
+            "cd '$PROJECT_DIR' && python3 control.py repair"
+
+      - name: Verify final recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in {1..12}; do
+            FILE="$RUNNER_TEMP/status-final.json"
+
+            gh codespace ssh -c "$CODESPACE" -- \
+              "cd '$PROJECT_DIR' && python3 control.py status" > "$FILE"
+
+            if jq -e '
+              .safety_ok == true and
+              .control_state.active_engine == "trading.py" and
+              .guardian.desired.environment == "DEMO" and
+              .guardian.desired.real_trading_enabled == false and
+              (.guardian.known_engine_processes["trading.py"].supervisor | length > 0) and
+              (.guardian.known_engine_processes["trading.py"].worker | length > 0) and
+              (.guardian.known_engine_processes["trading.py"].radar | length > 0) and
+              (.guardian.known_engine_processes["trading.py"].reporter | length > 0) and
+              (.guardian.processes.drive_sync | length > 0)
+            ' "$FILE" >/dev/null; then
+              echo "EXTERNAL GUARDIAN RECOVERY TEST OK"
+              exit 0
+            fi
+
+            echo "Waiting for complete recovery..."
+            sleep 10
+          done
+
+          echo "Recovery incomplete."
+          exit 3
