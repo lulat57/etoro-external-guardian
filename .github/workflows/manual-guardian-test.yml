@@ -1,0 +1,57 @@
+name: External Guardian Manual Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manual-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      GH_TOKEN: ${{ secrets.ETORO_GUARDIAN_TOKEN }}
+      CODESPACE: psychic-couscous-wvvq65qjw4jx2v54p
+      PROJECT_DIR: /workspaces/codespaces-blank/agent_demo
+
+    steps:
+      - name: Verify secret
+        shell: bash
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "ETORO_GUARDIAN_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Check Codespace state
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
+          echo "Codespace state: $STATE"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if Codespace is not available
+        if: steps.state.outputs.state != 'Available'
+        shell: bash
+        run: |
+          echo "Codespace is not Available."
+          echo "First test stops here: no automatic start and no repair."
+          exit 2
+
+      - name: Read project status
+        if: steps.state.outputs.state == 'Available'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh codespace ssh -c "$CODESPACE" -- "cd '$PROJECT_DIR' && python3 control.py status"
+
+      - name: Test completed
+        if: success()
+        shell: bash
+        run: |
+          echo "MANUAL GUARDIAN TEST OK"
+          echo "Status only - no repair - no trading changes - no schedule."
