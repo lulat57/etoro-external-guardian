@@ -1,0 +1,149 @@
+name: External Guardian Auto Recovery
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etoro-external-guardian
+  cancel-in-progress: false
+
+jobs:
+  guardian:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+
+    env:
+      GH_TOKEN: ${{ secrets.ETORO_GUARDIAN_TOKEN }}
+      CODESPACE: psychic-couscous-wvvq65qjw4jx2v54p
+      PROJECT_DIR: /workspaces/codespaces-blank/agent_demo
+
+    steps:
+      - name: Verify secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "ETORO_GUARDIAN_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Check and start Codespace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
+          echo "Initial state: $STATE"
+
+          if [ "$STATE" != "Available" ]; then
+            gh api --method POST "/user/codespaces/$CODESPACE/start" >/dev/null
+          fi
+
+          for i in {1..10}; do
+            STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
+            echo "Codespace state: $STATE"
+            if [ "$STATE" = "Available" ]; then
+              sleep 8
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Codespace did not become Available in time."
+          exit 2
+
+      - name: Recover V3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cs_exec() {
+            local remote_cmd="$1"
+            local attempts="${2:-2}"
+            local n
+
+            for n in $(seq 1 "$attempts"); do
+              echo "SSH attempt $n/$attempts" >&2
+
+              if timeout --signal=TERM --kill-after=3s 25s \
+                gh codespace ssh -c "$CODESPACE" -- \
+                -T \
+                -o ConnectTimeout=8 \
+                -o ConnectionAttempts=1 \
+                -o ServerAliveInterval=5 \
+                -o ServerAliveCountMax=2 \
+                "cd '$PROJECT_DIR' && $remote_cmd"; then
+                return 0
+              fi
+
+              echo "SSH attempt $n failed or timed out." >&2
+              sleep 6
+            done
+
+            return 1
+          }
+
+          BEFORE="$RUNNER_TEMP/status-before.json"
+
+          if cs_exec "python3 control.py status" 2 > "$BEFORE"; then
+            jq -e . "$BEFORE" >/dev/null
+
+            jq -e '
+              .safety_ok == true and
+              .guardian.desired.environment == "DEMO" and
+              .guardian.desired.real_trading_enabled == false
+            ' "$BEFORE" >/dev/null
+
+            NEED_REPAIR=$(jq -r '
+              (
+                (.known_engines["trading.py"].supervisor | length == 0) or
+                (.known_engines["trading.py"].worker | length == 0) or
+                (.known_engines["trading.py"].radar | length == 0) or
+                (.known_engines["trading.py"].reporter | length == 0) or
+                (.guardian.processes.drive_sync | length == 0)
+              )
+            ' "$BEFORE")
+
+            echo "Repair needed: $NEED_REPAIR"
+
+            if [ "$NEED_REPAIR" = "true" ]; then
+              cs_exec "python3 control.py repair" 2
+            fi
+          else
+            echo "Status unavailable; trying repair directly."
+            cs_exec "python3 control.py repair" 2
+          fi
+
+          sleep 8
+
+          for i in 1 2; do
+            FINAL="$RUNNER_TEMP/status-final.json"
+
+            if cs_exec "python3 control.py status" 1 > "$FINAL" && \
+               jq -e . "$FINAL" >/dev/null && \
+               jq -e '
+                 .safety_ok == true and
+                 .control_state.active_engine == "trading.py" and
+                 .guardian.desired.environment == "DEMO" and
+                 .guardian.desired.real_trading_enabled == false and
+                 (.known_engines["trading.py"].supervisor | length > 0) and
+                 (.known_engines["trading.py"].worker | length > 0) and
+                 (.known_engines["trading.py"].radar | length > 0) and
+                 (.known_engines["trading.py"].reporter | length > 0) and
+                 (.guardian.processes.drive_sync | length > 0)
+               ' "$FINAL" >/dev/null; then
+              echo "EXTERNAL GUARDIAN AUTO RECOVERY OK"
+              exit 0
+            fi
+
+            echo "Recovery not complete yet."
+            sleep 8
+          done
+
+          echo "Recovery incomplete."
+          exit 5
