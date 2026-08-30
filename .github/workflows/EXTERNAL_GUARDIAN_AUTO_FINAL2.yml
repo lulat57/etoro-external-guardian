@@ -101,10 +101,10 @@ jobs:
 
             NEED_REPAIR=$(jq -r '
               (
-                (.guardian.known_engine_processes["trading.py"].supervisor | length == 0) or
-                (.guardian.known_engine_processes["trading.py"].worker | length == 0) or
-                (.guardian.known_engine_processes["trading.py"].radar | length == 0) or
-                (.guardian.known_engine_processes["trading.py"].reporter | length == 0) or
+                (.guardian.processes.supervisor | length == 0) or
+                (.guardian.processes.worker | length == 0) or
+                (.guardian.processes.radar | length == 0) or
+                (.guardian.processes.reporter | length == 0) or
                 (.guardian.processes.drive_sync | length == 0)
               )
             ' "$STATUS")
@@ -137,10 +137,10 @@ jobs:
                  .control_state.active_engine == "trading.py" and
                  .guardian.desired.environment == "DEMO" and
                  .guardian.desired.real_trading_enabled == false and
-                 (.guardian.known_engine_processes["trading.py"].supervisor | length > 0) and
-                 (.guardian.known_engine_processes["trading.py"].worker | length > 0) and
-                 (.guardian.known_engine_processes["trading.py"].radar | length > 0) and
-                 (.guardian.known_engine_processes["trading.py"].reporter | length > 0) and
+                 (.guardian.processes.supervisor | length > 0) and
+                 (.guardian.processes.worker | length > 0) and
+                 (.guardian.processes.radar | length > 0) and
+                 (.guardian.processes.reporter | length > 0) and
                  (.guardian.processes.drive_sync | length > 0)
                ' "$FINAL" >/dev/null; then
               echo "EXTERNAL GUARDIAN AUTO RECOVERY OK"
