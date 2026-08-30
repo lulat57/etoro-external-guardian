@@ -3,7 +3,7 @@ name: External Guardian Auto Recovery
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2-57/5 * * * *"
 
 permissions:
   contents: read
@@ -15,7 +15,7 @@ concurrency:
 jobs:
   guardian:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
 
     env:
       GH_TOKEN: ${{ secrets.ETORO_GUARDIAN_TOKEN }}
@@ -126,9 +126,9 @@ jobs:
           echo "Waiting for internal supervisor to complete recovery."
           sleep 15
 
-          for i in 1 2 3 4 5; do
+          for i in {1..12}; do
             FINAL="$RUNNER_TEMP/status-final-$i.json"
-            echo "Verification $i/5"
+            echo "Verification $i/12"
 
             if ssh_run "python3 control.py status" 1 > "$FINAL" && \
                jq -e . "$FINAL" >/dev/null 2>&1 && \
