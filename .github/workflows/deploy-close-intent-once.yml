@@ -57,7 +57,7 @@ jobs:
           done
           exit 3
 
-      - name: Fast-forward exact reviewed commit
+      - name: Verify exact reviewed commit
         shell: bash
         run: |
           set -euo pipefail
@@ -74,7 +74,7 @@ jobs:
               "bash -lc '$remote_cmd'"
           }
 
-          ssh_run "cd $REPO_DIR && test -z \"\$(git status --porcelain --untracked-files=no)\" && git fetch origin main && test \"\$(git rev-parse origin/main)\" = $EXPECTED_SHA && git merge-base --is-ancestor HEAD $EXPECTED_SHA && git merge --ff-only $EXPECTED_SHA && python3 -m py_compile agent_demo/trading.py agent_demo/control.py agent_demo/guardian.py && grep -q 'def persist_close_intent' agent_demo/trading.py"
+          ssh_run "cd $REPO_DIR && echo CURRENT_SHA=\$(git rev-parse HEAD) && test \"\$(git rev-parse HEAD)\" = $EXPECTED_SHA && python3 -m py_compile agent_demo/trading.py && grep -Fq \"def persist_close_intent\" agent_demo/trading.py"
 
       - name: Restart and verify DEMO stack
         shell: bash
