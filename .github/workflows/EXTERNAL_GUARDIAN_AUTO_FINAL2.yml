@@ -15,7 +15,7 @@ concurrency:
 jobs:
   guardian:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
 
     env:
       GH_TOKEN: ${{ secrets.ETORO_GUARDIAN_TOKEN }}
@@ -44,20 +44,41 @@ jobs:
             gh api --method POST "/user/codespaces/$CODESPACE/start" >/dev/null
           fi
 
-          for i in {1..12}; do
+          for i in {1..24}; do
             STATE=$(gh api "/user/codespaces/$CODESPACE" --jq '.state')
             echo "Codespace state: $STATE"
 
             if [ "$STATE" = "Available" ]; then
-              sleep 10
-              exit 0
+              break
             fi
 
             sleep 5
           done
 
-          echo "Codespace did not become Available in time."
-          exit 2
+          if [ "$STATE" != "Available" ]; then
+            echo "Codespace did not become Available in time."
+            exit 2
+          fi
+
+          echo "Waiting for Codespace SSH readiness."
+          for i in {1..10}; do
+            echo "SSH readiness $i/10"
+            if timeout --signal=TERM --kill-after=3s 30s \
+              gh codespace ssh -c "$CODESPACE" -- \
+              -T \
+              -o ConnectTimeout=12 \
+              -o ConnectionAttempts=1 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              true; then
+              echo "Codespace SSH ready."
+              exit 0
+            fi
+            sleep 8
+          done
+
+          echo "Codespace became Available but SSH was not ready."
+          exit 3
 
       - name: Recover and verify V3
         shell: bash
@@ -72,14 +93,14 @@ jobs:
             for n in $(seq 1 "$attempts"); do
               echo "SSH attempt $n/$attempts" >&2
 
-              if timeout --signal=TERM --kill-after=3s 25s \
+              if timeout --signal=TERM --kill-after=3s 45s \
                 gh codespace ssh -c "$CODESPACE" -- \
                 -T \
-                -o ConnectTimeout=8 \
+                -o ConnectTimeout=12 \
                 -o ConnectionAttempts=1 \
                 -o ServerAliveInterval=5 \
                 -o ServerAliveCountMax=2 \
-                "bash -lic 'cd \"$PROJECT_DIR\" && ($remote_cmd || true)'"; then
+                "bash -lc 'cd \"$PROJECT_DIR\" && $remote_cmd'"; then
                 return 0
               fi
 
@@ -92,7 +113,7 @@ jobs:
 
           STATUS="$RUNNER_TEMP/status.json"
 
-          if ssh_run "python3 control.py status" 2 > "$STATUS" && jq -e . "$STATUS" >/dev/null 2>&1; then
+          if ssh_run "python3 control.py status" 3 > "$STATUS" && jq -e . "$STATUS" >/dev/null 2>&1; then
             jq -e '
               .safety_ok == true and
               .guardian.desired.environment == "DEMO" and
@@ -117,7 +138,7 @@ jobs:
 
           if [ "$NEED_REPAIR" = "true" ]; then
             echo "Launching control.py repair."
-            ssh_run "python3 control.py repair" 2 || {
+            ssh_run "python3 control.py repair" 3 || {
               echo "Could not reach Codespace for repair."
               exit 4
             }
@@ -126,9 +147,9 @@ jobs:
           echo "Waiting for internal supervisor to complete recovery."
           sleep 15
 
-          for i in {1..12}; do
+          for i in {1..8}; do
             FINAL="$RUNNER_TEMP/status-final-$i.json"
-            echo "Verification $i/12"
+            echo "Verification $i/8"
 
             if ssh_run "python3 control.py status" 1 > "$FINAL" && \
                jq -e . "$FINAL" >/dev/null 2>&1 && \
